@@ -1,0 +1,12 @@
+# Activation layer for `dsh-occlick`.
+#
+# The row id `occlick` is the identity a profile patch and the browser half use:
+#
+#   - id: occlick
+#     disabled: true
+#
+# The browser half registers its configuration page for the same row
+# (`dsh-occlick#occlick`), which is where the sound is chosen.
+- insert:
+    - id: occlick
+      name: dsh-occlick
