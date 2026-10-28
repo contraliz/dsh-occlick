@@ -92,21 +92,29 @@ function createList() {
 
 /**
  * Mount the plugin against a fake client context.
- * @param options - the session list to observe.
- * @returns the mounted context, captured registrations, and its event handlers.
+ * @param options - the session list to observe and how the remote service behaves.
+ * @returns the mounted context, registrations, event handlers, and services.
  */
-function mount({ list = createList() } = {}) {
+function mount({ list = createList(), remoteThrows = false, withRemote = true } = {}) {
 	const plugin = materialize();
 	const disposers = [];
 	const registrations = [];
 	const handlers = new Map();
+	const remote = {
+		$on(event, handler) {
+			if (remoteThrows) throw new Error("unknown remote event");
+			handlers.set(event, handler);
+			return () => handlers.delete(event);
+		},
+	};
+	const services = new Map([
+		["sessions", { list }],
+		["remote", remote],
+	]);
 	const ctx = {
 		sessions: { list },
-		remote: {
-			$on(event, handler) {
-				handlers.set(event, handler);
-				return () => handlers.delete(event);
-			},
+		get(name) {
+			return withRemote ? services.get(name) : undefined;
 		},
 		locale: {
 			bind: () => (key) => key,
@@ -135,19 +143,23 @@ function mount({ list = createList() } = {}) {
 	};
 }
 
+/** Find the row configuration registration. */
+function pageOf(mounted) {
+	return mounted.registrations.find((item) => item.options.name === "plugins.row.config");
+}
+
 /** Read the three selects out of the rendered settings page. */
 function selectsOf(mounted) {
-	const entry = mounted.registrations.find((item) => item.options.name === "plugins.row.config");
-	const view = entry.component({ t: (key) => key, view: "page" });
+	const view = pageOf(mounted).component({ t: (key) => key, view: "page" });
 	const rows = view.props.children.filter((child) => child.type === "div");
 	return rows.map((row) => row.props.children.find((child) => child.type === "select"));
 }
 
-test("registers one module and asks for the services it uses", () => {
+test("registers one module and needs only the stable services", () => {
 	assert.equal(registration.id, "dsh-occlick");
 	const plugin = materialize();
 	assert.equal(typeof plugin.apply, "function");
-	assert.deepEqual(plugin.inject, ["sessions", "remote", "slots", "locale"]);
+	assert.deepEqual(plugin.inject, ["sessions", "slots", "locale"], "optional signals must not gate mounting");
 });
 
 test("plays the turn channel when a running turn ends", () => {
@@ -196,6 +208,22 @@ test("coalesces a burst of approval requests", () => {
 	mounted.dispose();
 });
 
+test("the composer chain announces a pending interaction without taking it over", () => {
+	played.length = 0;
+	const mounted = mount();
+	const entry = mounted.registrations.find((item) => item.options.name === "conversation.composer");
+	assert.ok(entry, "the fallback observer is registered");
+	assert.equal(entry.options.priority, 0, "it runs before the approval panel's own entry");
+	assert.equal(entry.component({}), null, "it never renders");
+
+	const interaction = { kind: "approval" };
+	assert.equal(entry.options.select({ pendingInteraction: interaction }), null, "the chain continues");
+	assert.equal(played.length, 1, "the approval sound plays");
+	assert.equal(entry.options.select({ pendingInteraction: interaction }), null);
+	assert.equal(played.length, 1, "the same interaction does not sound twice");
+	mounted.dispose();
+});
+
 test("plays the error channel and suppresses the turn-end sound", () => {
 	played.length = 0;
 	storage.clear();
@@ -228,15 +256,40 @@ test("a later clean turn plays the turn-end sound again", () => {
 	mounted.dispose();
 });
 
+test("still offers the page when the remote service refuses every event", () => {
+	const mounted = mount({ remoteThrows: true });
+	assert.ok(pageOf(mounted), "the settings page survives a failing subscription");
+	assert.equal(selectsOf(mounted).length, 3);
+	mounted.dispose();
+});
+
+test("still offers the page when the remote service is missing entirely", () => {
+	const mounted = mount({ withRemote: false });
+	assert.ok(pageOf(mounted));
+	mounted.dispose();
+});
+
 test("registers the configuration page for its own row", () => {
 	const mounted = mount();
-	const entry = mounted.registrations.find((item) => item.options.name === "plugins.row.config");
+	const entry = pageOf(mounted);
 	assert.ok(entry);
 	assert.equal(entry.options.key, "dsh-occlick#occlick");
 	assert.equal(entry.options.locale, "plugin.occlick");
+	assert.equal(entry.component({ t: (key) => key, view: "summary" }), "summary");
+	mounted.dispose();
+});
 
-	const summary = entry.component({ t: (key) => key, view: "summary" });
-	assert.equal(summary, "summary");
+test("registers the same pickers as a Settings section", () => {
+	const mounted = mount();
+	const section = mounted.registrations.find((item) => item.options.name === "settings.section");
+	assert.ok(section, "Settings carries a Sound effects page");
+	assert.equal(section.options.id, "occlick");
+	assert.equal(section.options.order, 50);
+	assert.equal(section.options.label(), "title");
+
+	const view = section.component({ t: (key) => key, close: () => {} });
+	const selects = view.props.children.filter((child) => child.type === "div");
+	assert.equal(selects.length, 3, "the section renders all three pickers");
 	mounted.dispose();
 });
 
@@ -249,7 +302,10 @@ test("renders one selector per channel with OpenCode's defaults", () => {
 		selects.map((select) => select.props.value),
 		["staplebops-01", "staplebops-02", "nope-03"],
 	);
-	for (const select of selects) assert.equal(select.props.children.length, 45);
+	for (const select of selects) {
+		assert.equal(select.props.children.length, 46, "45 sounds plus Off");
+		assert.equal(select.props.children[0].props.value, "off", "Off comes first");
+	}
 	mounted.dispose();
 });
 
@@ -263,6 +319,22 @@ test("saving one channel previews it and leaves the others alone", () => {
 	assert.equal(storage.get("dsh-occlick.permission"), "yup-02");
 	assert.equal(played.length, before + 1, "the new choice previews");
 	assert.equal(storage.has("dsh-occlick.turn"), false, "other channels are untouched");
+	mounted.dispose();
+});
+
+test("choosing Off silences the channel", () => {
+	storage.clear();
+	played.length = 0;
+	const mounted = mount();
+	const [turn] = selectsOf(mounted);
+	const before = played.length;
+	turn.props.onChange({ target: { value: "off" } });
+	assert.equal(storage.get("dsh-occlick.turn"), "off");
+	assert.equal(played.length, before, "Off previews nothing");
+
+	mounted.list.publish({ a: { running: true } });
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(played.length, before, "a silenced channel plays nothing at turn end");
 	mounted.dispose();
 });
 

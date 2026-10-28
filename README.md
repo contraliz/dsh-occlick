@@ -57,7 +57,9 @@ dsh plugin --profile web add .
 
 ## Choose the sounds
 
-Open **Plugins → dsh-occlick → Configure**. The row's page shows one selector per channel, each listing every clip and labelled the way OpenCode labels them.
+Open **Settings → Sound effects**, or **Plugins → dsh-occlick → Configure**. Both show the same three selectors, each listing every clip and labelled the way OpenCode labels them.
+
+Every channel also offers **Off (silent)**, so one event can be muted while the others keep sounding.
 
 The defaults are the clips OpenCode's own desktop app uses for the same events:
 
