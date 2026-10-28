@@ -17,11 +17,14 @@ OpenCode ships a small library of notification clips for its desktop app. This p
 | Turn finished | Session `running: true → false` | Plays the turn clip once |
 | Permission requested | `approval/request` | Plays the permission clip, then passes the request to the approval UI |
 | Turn ended on an error | `api-session/error` | Plays the error clip; the following turn end stays silent |
+| User stops the turn | Stop button or `Esc` `Esc` | Silent; a stopped turn did not finish |
+| Flicker at boot or reconnect | `true → false` within ~250 ms | Silent |
+| A run already going at page load | `running: true` on the first snapshot | Sounds only after ~2 s of observed running |
 | Repeated idle refresh | `false → false` | Silent |
 | Subagent Session | `origin: subagent` | Silent |
 | Mounted over an idle list | — | Silent (no history replay) |
 
-Because DSH publishes running state per Session, a turn that ends in the background still makes the sound. An error is remembered per Session for 15 seconds, so the failed turn does not also play the turn-finished clip. Approval requests are coalesced within 1.5 seconds, so a burst sounds once.
+Because DSH publishes running state per Session, a turn that ends while you are looking elsewhere still makes the sound. Opening the harness, reloading it, or reconnecting cannot replay an old turn end: a run that was already going only counts after this page has watched it for two seconds, and a run shorter than a quarter second is treated as a blip. An error is remembered per Session for 15 seconds, so the failed turn does not also play the turn-finished clip. Approval requests are coalesced within 1.5 seconds, so a burst sounds once.
 
 ## Install
 
@@ -84,7 +87,8 @@ The choices are stored in the browser under `dsh-occlick.turn`, `dsh-occlick.per
 ## Details
 
 - **Audio, not notifications**: the plugin plays a clip through one reused `HTMLAudioElement`. It opens no system notification and registers no service.
-- **Autoplay**: browsers block audio before the first interaction, so the plugin grants itself media activation on the first pointer press or key press. A turn that ends before you have touched the window stays silent; the next turn does not.
+- **Autoplay, silently**: browsers want a user gesture before audio, so the first pointer press or key press pre-warms that element with a zero-length silent clip. The warm-up is muted and never audible; clicking around the window cannot play a sound on its own.
+- **Your stop is not a finish**: stopping a turn with the composer's stop button, or with the `Esc` `Esc` shortcut, keeps the turn-finished sound quiet.
 - **Bundle, not a patch**: the package ships `cordis.patch.yml`, so DSH lists it under Plugins with its row and a Configure page rather than as a loose Loader row.
 - **Nothing leaves the machine**: the clips are embedded in the client bundle; the plugin makes no network request at runtime.
 

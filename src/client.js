@@ -36,6 +36,25 @@ window.__ModuleLoader__.load({
 			{ id: "error", fallback: "nope-03" },
 		];
 
+		/** A zero-length WAV; the media warm-up plays it muted, so it is never heard. */
+		const SILENT_CLIP =
+			"data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+
+		/** A run this page watched begin must last this long before its end may sound. */
+		const MIN_WATCHED_RUN_MS = 250;
+
+		/** A run already going at mount is trusted only after this much observation. */
+		const MIN_INHERITED_RUN_MS = 2000;
+
+		/** How long a turn end stays silent after the user stops the turn. */
+		const STOP_GRACE_MS = 15000;
+
+		/** Two Escapes within this window are the composer's stop sequence. */
+		const STOP_SEQUENCE_MS = 700;
+
+		/** The stop control's label in the shipped dictionaries, as a fallback. */
+		const STOP_LABELS = ["Stop generating", "停止生成"];
+
 		/** `[{ id, label, data }]`, filled in by the build. */
 		const SOUNDS = __SOUND_LIBRARY__;
 
@@ -49,7 +68,6 @@ window.__ModuleLoader__.load({
 			error: "Turn ended on an error",
 			errorHint: "Plays instead of the turn-finished sound when a turn fails.",
 			off: "Off (silent)",
-			preview: "Preview",
 			hint: "Choices are saved in this browser. Each dropdown previews as you pick.",
 			summary: "Plays a sound when a turn finishes, asks for permission, or fails.",
 		};
@@ -63,7 +81,6 @@ window.__ModuleLoader__.load({
 			error: "回合出错结束",
 			errorHint: "回合失败时播放，替换「回合完成」提示音。",
 			off: "关闭（静音）",
-			preview: "试听",
 			hint: "选择保存在当前浏览器中；切换选项时会立即试听。",
 			summary: "回合完成、请求权限或失败时播放提示音。",
 		};
@@ -168,15 +185,23 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
-			 * Grant media activation once, so a later event is not blocked by the
-			 * autoplay policy.
+			 * Pre-warm the element inside a user gesture with a silent clip, so a
+			 * later event is not the first playback attempt. This stays muted and
+			 * the clip has no samples, so no click can ever be heard.
 			 */
 			function unlock() {
 				const audio = ensure();
 				if (audio === undefined) return;
-				audio.muted = true;
-				play(readChoice(CHANNELS[0]), CHANNELS[0].fallback);
-				audio.muted = false;
+				try {
+					audio.muted = true;
+					audio.src = SILENT_CLIP;
+					const started = audio.play();
+					if (started !== null && typeof started === "object" && typeof started.catch === "function") {
+						started.catch(() => {});
+					}
+				} catch {
+					// A refused warm-up costs nothing.
+				}
 			}
 
 			return { play, unlock };
@@ -198,9 +223,6 @@ window.__ModuleLoader__.load({
 .dsh-occlick__label { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 1.5; }
 .dsh-occlick__select { appearance: auto; background: var(--dsw-alias-bg-layer-2, transparent); color: var(--dsw-alias-label-primary, inherit); border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35)); border-radius: 6px; font: inherit; font-size: 13px; max-width: 320px; padding: 6px 8px; }
 .dsh-occlick__hint { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.5; margin: 0; }
-.dsh-occlick__preview { background: transparent; border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35)); border-radius: 6px; color: var(--dsw-alias-label-primary, inherit); cursor: pointer; font: inherit; font-size: 12px; padding: 5px 10px; }
-.dsh-occlick__preview:hover { background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
-.dsh-occlick__preview:disabled { cursor: default; opacity: .45; }
 `;
 			document.head.appendChild(tag);
 		}
@@ -234,7 +256,6 @@ window.__ModuleLoader__.load({
 					react.createElement("option", { key: OFF, value: OFF }, t("off")),
 					...SOUNDS.map((sound) => react.createElement("option", { key: sound.id, value: sound.id }, sound.label)),
 				];
-				const preview = () => player.play(choices[entry.id], entry.fallback);
 				return react.createElement(
 					"div",
 					{ className: "dsh-occlick__row", key: entry.id },
@@ -243,17 +264,6 @@ window.__ModuleLoader__.load({
 						"select",
 						{ className: "dsh-occlick__select", id: selectId, value: choices[entry.id], onChange: change },
 						options,
-					),
-					react.createElement(
-						"button",
-						{
-							type: "button",
-							className: "dsh-occlick__preview",
-							id: `${selectId}-preview`,
-							disabled: choices[entry.id] === OFF,
-							onClick: preview,
-						},
-						t("preview"),
 					),
 					react.createElement("p", { className: "dsh-occlick__hint" }, t(`${entry.id}Hint`)),
 				);
@@ -318,7 +328,7 @@ window.__ModuleLoader__.load({
 				"occlick: settings page",
 			);
 
-			/** Unlock media playback on the first interaction the page receives. */
+			/** Warm the audio element up silently on the first interaction the page receives. */
 			ctx.effect(() => {
 				const unlock = () => player.unlock();
 				window.addEventListener("pointerdown", unlock, { capture: true, once: true });
@@ -406,11 +416,71 @@ window.__ModuleLoader__.load({
 				"occlick: pending interactions",
 			);
 
+			/**
+			 * The composer's stop control, in the shipped dictionaries plus the
+			 * host's active translation. Clicking either stop button, or pressing
+			 * Esc twice, ends a turn the user asked to end; that turn must not
+			 * also make the turn-finished sound.
+			 */
+			const stopLabels = new Set(STOP_LABELS);
+			try {
+				const label =
+					typeof ctx.locale.translate === "function" ? ctx.locale.translate("conversation", "input.stop") : undefined;
+				if (typeof label === "string" && label !== "" && label !== "input.stop") stopLabels.add(label);
+			} catch {
+				// A host without the conversation dictionary still matches the shipped labels.
+			}
+
+			let stoppedAt = 0;
+			const noteStop = () => {
+				stoppedAt = Date.now();
+			};
+			const isStopControl = (target) => {
+				if (target === null || typeof target !== "object" || typeof target.closest !== "function") return false;
+				const button = target.closest("button[aria-label]");
+				if (button === null || button === undefined) return false;
+				const label = typeof button.getAttribute === "function" ? button.getAttribute("aria-label") : undefined;
+				return typeof label === "string" && stopLabels.has(label.trim());
+			};
+
+			ctx.effect(() => {
+				let lastEscape = 0;
+				const onClick = (event) => {
+					if (isStopControl(event.target)) noteStop();
+				};
+				const onKeyDown = (event) => {
+					if (event.key !== "Escape") {
+						lastEscape = 0;
+						return;
+					}
+					const now = Date.now();
+					if (now - lastEscape <= STOP_SEQUENCE_MS) {
+						lastEscape = 0;
+						noteStop();
+						return;
+					}
+					lastEscape = now;
+				};
+				window.addEventListener("click", onClick, true);
+				window.addEventListener("keydown", onKeyDown, true);
+				return () => {
+					window.removeEventListener("click", onClick, true);
+					window.removeEventListener("keydown", onKeyDown, true);
+				};
+			}, "occlick: user stops");
+
 			const sessions = ctx.sessions;
 			const list = sessions === null || sessions === undefined ? undefined : sessions.list;
 			if (list !== undefined && list !== null && typeof list.subscribe === "function") {
-				/** Last observed running bit, so only a true-to-false edge clicks. */
-				const previous = new Map();
+				/**
+				 * Last observed running bit plus when the current run started, so
+				 * only a turn this page really watched can make a sound. A run
+				 * already going at mount (page load, reconnect) has to stay running
+				 * for {@link MIN_INHERITED_RUN_MS} first; a short blip is silent.
+				 */
+				const observed = new Map();
+				/** True once the first snapshot has been seen; later rows began in this page. */
+				let primed = false;
 				const observe = () => {
 					const snapshot = list.getSnapshot();
 					if (snapshot === null || snapshot === undefined) return;
@@ -422,19 +492,48 @@ window.__ModuleLoader__.load({
 						if (row === null || row === undefined) continue;
 						live.add(id);
 						const running = row.running === true;
-						const wasRunning = previous.get(id);
-						previous.set(id, running);
-						if (wasRunning !== true || running) continue;
-						if (row.origin === "subagent") continue;
-						const failedAt = errored.get(id);
-						if (failedAt !== undefined && Date.now() - failedAt < ERROR_WINDOW_MS) {
-							// The error channel already sounded; do not double up.
-							errored.delete(id);
+						const now = Date.now();
+						const state = observed.get(id);
+						if (state === undefined) {
+							// The first sighting only records a baseline; it never sounds.
+							observed.set(id, {
+								running,
+								since: running ? now : undefined,
+								inherited: running && !primed,
+							});
 							continue;
 						}
+						const wasRunning = state.running === true;
+						const since = state.since;
+						const inherited = state.inherited;
+						if (running && !wasRunning) {
+							state.since = now;
+							state.inherited = false;
+						} else if (!running) {
+							state.since = undefined;
+							state.inherited = false;
+						}
+						state.running = running;
+						if (!wasRunning || running) continue;
+						if (row.origin === "subagent") continue;
+						const failedAt = errored.get(id);
+						if (failedAt !== undefined) {
+							// The error channel already spoke for this turn; do not double up,
+							// and do not let a stale marker mute the next clean turn.
+							errored.delete(id);
+							if (now - failedAt < ERROR_WINDOW_MS) continue;
+						}
+						if (stoppedAt !== 0 && now - stoppedAt < STOP_GRACE_MS) {
+							// The user ended this turn; a stop is not a finished turn.
+							stoppedAt = 0;
+							continue;
+						}
+						const watched = since === undefined ? 0 : now - since;
+						if (watched < (inherited ? MIN_INHERITED_RUN_MS : MIN_WATCHED_RUN_MS)) continue;
 						playChannel("turn");
 					}
-					for (const id of previous.keys()) if (!live.has(id)) previous.delete(id);
+					for (const id of observed.keys()) if (!live.has(id)) observed.delete(id);
+					primed = true;
 				};
 				ctx.effect(() => list.subscribe(observe), "occlick: turn ends");
 				observe();

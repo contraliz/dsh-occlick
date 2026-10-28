@@ -23,6 +23,11 @@ test("the package manifest parses strictly", () => {
 /** Playback calls observed by the fake audio element. */
 const played = [];
 
+/** Only the calls a user could actually hear. */
+function audible() {
+	return played.filter((entry) => entry.muted === false);
+}
+
 class FakeAudio {
 	constructor() {
 		this.muted = false;
@@ -38,15 +43,29 @@ class FakeAudio {
 
 const storage = new Map();
 
+/** Window listeners the bundle installed, by event name. */
+const windowListeners = new Map();
+
 const fakeWindow = {
 	Audio: FakeAudio,
 	localStorage: {
 		getItem: (key) => (storage.has(key) ? storage.get(key) : null),
 		setItem: (key, value) => storage.set(key, value),
 	},
-	addEventListener() {},
-	removeEventListener() {},
+	addEventListener(type, listener) {
+		const listeners = windowListeners.get(type) ?? new Set();
+		listeners.add(listener);
+		windowListeners.set(type, listeners);
+	},
+	removeEventListener(type, listener) {
+		windowListeners.get(type)?.delete(listener);
+	},
 };
+
+/** Deliver one fake DOM event to the bundle's listeners. */
+function fire(type, event) {
+	for (const listener of [...(windowListeners.get(type) ?? [])]) listener(event);
+}
 
 globalThis.window = fakeWindow;
 globalThis.document = {
@@ -54,6 +73,23 @@ globalThis.document = {
 	createElement: () => ({ dataset: {}, textContent: "" }),
 	head: { appendChild() {} },
 };
+
+/** Controllable wall clock, so settle windows are testable without waiting. */
+let clock = 1_000_000;
+Date.now = () => clock;
+
+/** Advance the shared clock. */
+function tick(ms) {
+	clock += ms;
+}
+
+/** Fake button target for the composer's stop control. */
+function stopButtonTarget() {
+	const button = {
+		getAttribute: (name) => (name === "aria-label" ? "Stop generating" : null),
+	};
+	return { closest: (selector) => (selector === "button[aria-label]" ? button : null) };
+}
 
 /** Registration captured from the bundle's module-loader call. */
 let registration;
@@ -178,11 +214,101 @@ test("plays the turn channel when a running turn ends", () => {
 	played.length = 0;
 	const mounted = mount();
 	mounted.list.publish({ a: { running: true } });
-	assert.equal(played.length, 0, "starting a turn is silent");
+	assert.equal(audible().length, 0, "starting a turn is silent");
+	tick(1000);
 	mounted.list.publish({ a: { running: false } });
-	assert.equal(played.length, 1, "the turn end plays once");
+	assert.equal(audible().length, 1, "the turn end plays once");
 	mounted.list.publish({ a: { running: false } });
-	assert.equal(played.length, 1, "only the falling edge plays");
+	assert.equal(audible().length, 1, "only the falling edge plays");
+	mounted.dispose();
+});
+
+test("a running blip that ends at once stays silent", () => {
+	played.length = 0;
+	const mounted = mount();
+	mounted.list.publish({ a: { running: true } });
+	tick(100);
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(audible().length, 0, "a run too short to be real is not a finished turn");
+	mounted.dispose();
+});
+
+test("a run already going when the page mounted must prove itself", () => {
+	played.length = 0;
+	const list = createList();
+	list.publish({ a: { running: true } });
+	const mounted = mount({ list });
+
+	tick(500);
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(audible().length, 0, "a boot-time flicker stays silent");
+
+	mounted.list.publish({ a: { running: true } });
+	tick(2500);
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(audible().length, 1, "a run this page really watched sounds");
+	mounted.dispose();
+});
+
+test("mounting over an idle list stays silent", () => {
+	played.length = 0;
+	const mounted = mount();
+	mounted.list.publish({ a: { running: false } });
+	mounted.list.publish({ b: { running: false, origin: "subagent" } });
+	assert.equal(audible().length, 0);
+	mounted.dispose();
+});
+
+test("the first pointer press only warms the audio element", () => {
+	played.length = 0;
+	const mounted = mount();
+	fire("pointerdown", {});
+	assert.equal(audible().length, 0, "opening the harness must not play the turn sound");
+	const warm = played.at(-1);
+	assert.ok(warm, "the gesture still touches the audio element");
+	assert.equal(warm.muted, true, "the warm-up is muted");
+	assert.match(warm.src, /^data:audio\/wav;base64,/, "the warm-up is a silent clip");
+	mounted.dispose();
+});
+
+test("stopping the turn keeps the turn-end sound quiet", () => {
+	played.length = 0;
+	const mounted = mount();
+	mounted.list.publish({ a: { running: true } });
+	tick(1000);
+	fire("click", { target: stopButtonTarget() });
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(audible().length, 0, "a stopped turn did not finish");
+
+	tick(1000);
+	mounted.list.publish({ a: { running: true } });
+	tick(1000);
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(audible().length, 1, "the next clean turn sounds again");
+	mounted.dispose();
+});
+
+test("the Esc-Esc stop shortcut keeps the turn-end sound quiet", () => {
+	played.length = 0;
+	const mounted = mount();
+	mounted.list.publish({ a: { running: true } });
+	tick(1000);
+	fire("keydown", { key: "Escape" });
+	tick(100);
+	fire("keydown", { key: "Escape" });
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(audible().length, 0);
+	mounted.dispose();
+});
+
+test("a click somewhere else does not suppress the turn-end sound", () => {
+	played.length = 0;
+	const mounted = mount();
+	mounted.list.publish({ a: { running: true } });
+	tick(1000);
+	fire("click", { target: { closest: () => null } });
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(audible().length, 1);
 	mounted.dispose();
 });
 
@@ -190,8 +316,9 @@ test("stays quiet for subagent turns", () => {
 	played.length = 0;
 	const mounted = mount();
 	mounted.list.publish({ child: { running: true, origin: "subagent" } });
+	tick(1000);
 	mounted.list.publish({ child: { running: false, origin: "subagent" } });
-	assert.equal(played.length, 0);
+	assert.equal(audible().length, 0);
 	mounted.dispose();
 });
 
@@ -205,7 +332,7 @@ test("plays the permission channel on an approval request and delegates", () => 
 	handler.call({}, { toolName: "bash" }, () => {
 		delegated = true;
 	});
-	assert.equal(played.length, 1, "the approval sound plays immediately");
+	assert.equal(audible().length, 1, "the approval sound plays immediately");
 	assert.equal(delegated, true, "the request is passed on to the approval UI");
 	mounted.dispose();
 });
@@ -216,7 +343,7 @@ test("coalesces a burst of approval requests", () => {
 	const handler = mounted.handlers.get("approval/request");
 	handler.call({}, { toolName: "bash" }, () => {});
 	handler.call({}, { toolName: "bash" }, () => {});
-	assert.equal(played.length, 1, "one sound per burst");
+	assert.equal(audible().length, 1, "one sound per burst");
 	mounted.dispose();
 });
 
@@ -230,9 +357,9 @@ test("the composer chain announces a pending interaction without taking it over"
 
 	const interaction = { kind: "approval" };
 	assert.equal(entry.options.select({ pendingInteraction: interaction }), null, "the chain continues");
-	assert.equal(played.length, 1, "the approval sound plays");
+	assert.equal(audible().length, 1, "the approval sound plays");
 	assert.equal(entry.options.select({ pendingInteraction: interaction }), null);
-	assert.equal(played.length, 1, "the same interaction does not sound twice");
+	assert.equal(audible().length, 1, "the same interaction does not sound twice");
 	mounted.dispose();
 });
 
@@ -244,11 +371,12 @@ test("plays the error channel and suppresses the turn-end sound", () => {
 	assert.ok(onError, "session errors are observed");
 
 	mounted.list.publish({ a: { running: true } });
+	tick(1000);
 	onError("a", "boom");
-	assert.equal(played.length, 1, "the error sound plays when the error arrives");
+	assert.equal(audible().length, 1, "the error sound plays when the error arrives");
 
 	mounted.list.publish({ a: { running: false } });
-	assert.equal(played.length, 1, "the failed turn does not also play the turn-end sound");
+	assert.equal(audible().length, 1, "the failed turn does not also play the turn-end sound");
 	mounted.dispose();
 });
 
@@ -259,12 +387,14 @@ test("a later clean turn plays the turn-end sound again", () => {
 	const onError = mounted.handlers.get("api-session/error");
 
 	mounted.list.publish({ a: { running: true } });
+	tick(1000);
 	onError("a", "boom");
 	mounted.list.publish({ a: { running: false } });
 
 	mounted.list.publish({ a: { running: true } });
+	tick(1000);
 	mounted.list.publish({ a: { running: false } });
-	assert.equal(played.length, 2, "the error marker is consumed once");
+	assert.equal(audible().length, 2, "the error marker is consumed once");
 	mounted.dispose();
 });
 
@@ -321,47 +451,30 @@ test("renders one selector per channel with OpenCode's defaults", () => {
 	mounted.dispose();
 });
 
+test("the rows have no separate preview button", () => {
+	const mounted = mount();
+	const view = pageOf(mounted).component({ t: (key) => key, view: "page" });
+	const rows = view.props.children.filter((child) => child.type === "div");
+	assert.equal(rows.length, 3);
+	for (const row of rows) {
+		assert.equal(
+			row.props.children.some((child) => child.type === "button"),
+			false,
+			"choosing a sound already previews it",
+		);
+	}
+	mounted.dispose();
+});
+
 test("saving one channel previews it and leaves the others alone", () => {
 	storage.clear();
 	played.length = 0;
 	const mounted = mount();
 	const [, permission] = selectsOf(mounted);
-	const before = played.length;
 	permission.props.onChange({ target: { value: "yup-02" } });
 	assert.equal(storage.get("dsh-occlick.permission"), "yup-02");
-	assert.equal(played.length, before + 1, "the new choice previews");
+	assert.equal(audible().length, 1, "the new choice previews");
 	assert.equal(storage.has("dsh-occlick.turn"), false, "other channels are untouched");
-	mounted.dispose();
-});
-
-test("each channel has a Preview button that plays its own clip", () => {
-	storage.clear();
-	played.length = 0;
-	const mounted = mount();
-	const view = pageOf(mounted).component({ t: (key) => key, view: "page" });
-	const rows = view.props.children.filter((child) => child.type === "div");
-	assert.equal(rows.length, 3);
-
-	const before = played.length;
-	for (const row of rows) {
-		const button = row.props.children.find((child) => child.type === "button");
-		assert.ok(button, "every channel can be auditioned");
-		assert.equal(button.props.disabled, false);
-		button.props.onClick();
-	}
-	assert.equal(played.length, before + 3, "one play per channel");
-	mounted.dispose();
-});
-
-test("the Preview button is disabled for a muted channel", () => {
-	storage.clear();
-	storage.set("dsh-occlick.error", "off");
-	const mounted = mount();
-	const view = pageOf(mounted).component({ t: (key) => key, view: "page" });
-	const rows = view.props.children.filter((child) => child.type === "div");
-	const errorRow = rows[2];
-	const button = errorRow.props.children.find((child) => child.type === "button");
-	assert.equal(button.props.disabled, true);
 	mounted.dispose();
 });
 
@@ -370,14 +483,14 @@ test("choosing Off silences the channel", () => {
 	played.length = 0;
 	const mounted = mount();
 	const [turn] = selectsOf(mounted);
-	const before = played.length;
 	turn.props.onChange({ target: { value: "off" } });
 	assert.equal(storage.get("dsh-occlick.turn"), "off");
-	assert.equal(played.length, before, "Off previews nothing");
+	assert.equal(audible().length, 0, "Off previews nothing");
 
 	mounted.list.publish({ a: { running: true } });
+	tick(1000);
 	mounted.list.publish({ a: { running: false } });
-	assert.equal(played.length, before, "a silenced channel plays nothing at turn end");
+	assert.equal(audible().length, 0, "a silenced channel plays nothing at turn end");
 	mounted.dispose();
 });
 
