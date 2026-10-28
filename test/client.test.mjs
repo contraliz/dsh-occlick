@@ -334,6 +334,37 @@ test("saving one channel previews it and leaves the others alone", () => {
 	mounted.dispose();
 });
 
+test("each channel has a Preview button that plays its own clip", () => {
+	storage.clear();
+	played.length = 0;
+	const mounted = mount();
+	const view = pageOf(mounted).component({ t: (key) => key, view: "page" });
+	const rows = view.props.children.filter((child) => child.type === "div");
+	assert.equal(rows.length, 3);
+
+	const before = played.length;
+	for (const row of rows) {
+		const button = row.props.children.find((child) => child.type === "button");
+		assert.ok(button, "every channel can be auditioned");
+		assert.equal(button.props.disabled, false);
+		button.props.onClick();
+	}
+	assert.equal(played.length, before + 3, "one play per channel");
+	mounted.dispose();
+});
+
+test("the Preview button is disabled for a muted channel", () => {
+	storage.clear();
+	storage.set("dsh-occlick.error", "off");
+	const mounted = mount();
+	const view = pageOf(mounted).component({ t: (key) => key, view: "page" });
+	const rows = view.props.children.filter((child) => child.type === "div");
+	const errorRow = rows[2];
+	const button = errorRow.props.children.find((child) => child.type === "button");
+	assert.equal(button.props.disabled, true);
+	mounted.dispose();
+});
+
 test("choosing Off silences the channel", () => {
 	storage.clear();
 	played.length = 0;

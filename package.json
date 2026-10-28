@@ -1,6 +1,6 @@
 {
   "name": "dsh-occlick",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Plays an OpenCode turn-end sound in DeepSeek Harness, with a sound picker on the Plugins page.",
   "keywords": [
     "dsh",
