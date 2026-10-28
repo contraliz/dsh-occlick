@@ -6,7 +6,19 @@
  * the bundle once, and drives `apply` directly.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+
+test("the package manifest parses strictly", () => {
+	const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+	// A byte-order mark breaks the Host's JSON parse, which is how DSH reports
+	// "Package unavailable"; JSON.parse rejects it, so this catches a bad write.
+	const manifest = JSON.parse(raw);
+	assert.equal(manifest.name, "dsh-occlick");
+	assert.equal(manifest.dsh.bundle.patch, "./cordis.patch.yml");
+	assert.equal(manifest.dsh.client.platform, "web");
+	assert.ok(manifest.files.includes("lib"), "the built client must ship");
+});
 
 /** Playback calls observed by the fake audio element. */
 const played = [];
