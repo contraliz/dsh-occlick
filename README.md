@@ -53,12 +53,17 @@ Requires **DSH 0.2.0 or later** and the Web client (the desktop app, or `dsh web
 
 ### From the command line
 
-Copy one line, using the profile that matches how you run DSH:
+Copy the line for the profile that matches how you run DSH:
 
-| How you run DSH | Profile | Command |
-| --- | --- | --- |
-| Desktop app | `desktop` | `dsh plugin --profile desktop add "git+https://github.com/contraliz/dsh-occlick.git"` |
-| `dsh web` | `web` | `dsh plugin --profile web add "git+https://github.com/contraliz/dsh-occlick.git"` |
+```sh
+# DSH desktop app
+dsh plugin --profile desktop add "git+https://github.com/contraliz/dsh-occlick.git"
+```
+
+```sh
+# dsh web
+dsh plugin --profile web add "git+https://github.com/contraliz/dsh-occlick.git"
+```
 
 Restart DSH after a command-line install: bundle entries are composed at startup. To uninstall, use the same command with `remove dsh-occlick`.
 
