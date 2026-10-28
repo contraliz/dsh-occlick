@@ -57,12 +57,12 @@ Copy the line for the profile that matches how you run DSH:
 
 ```sh
 # DSH desktop app
-dsh plugin --profile desktop add "git+https://github.com/contraliz/dsh-occlick.git"
+dsh plugin --profile desktop add github:contraliz/dsh-occlick
 ```
 
 ```sh
 # dsh web
-dsh plugin --profile web add "git+https://github.com/contraliz/dsh-occlick.git"
+dsh plugin --profile web add github:contraliz/dsh-occlick
 ```
 
 Restart DSH after a command-line install: bundle entries are composed at startup. To uninstall, use the same command with `remove dsh-occlick`.
