@@ -1,13 +1,15 @@
 {
   "name": "dsh-occlick",
   "version": "0.4.1",
-  "description": "Plays an OpenCode turn-end sound in DeepSeek Harness, with a sound picker on the Plugins page.",
+  "description": "OpenCode notification sounds for DeepSeek Harness: pickers for turn finished, permission requested, and turn errors.",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "opencode",
-    "sound"
+    "sound",
+    "notifications",
+    "cordis"
   ],
   "type": "module",
   "license": "MIT",
@@ -31,7 +33,8 @@
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "assets/settings.png"
   ],
   "engines": {
     "node": ">=22",
