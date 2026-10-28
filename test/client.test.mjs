@@ -5,8 +5,8 @@
  * harness installs a fake browser plus a two-function React stand-in, imports
  * the bundle once, and drives `apply` directly.
  */
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 /** Playback calls observed by the fake audio element. */
 const played = [];
@@ -52,7 +52,7 @@ fakeWindow.__ModuleLoader__ = {
 	},
 };
 
-/** Two-function React stand-in: enough for the selector. */
+/** Two-function React stand-in: enough for the selectors. */
 const react = {
 	createElement: (type, props, ...children) => ({ type, props: { ...props, children: children.flat(Infinity) } }),
 	useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
@@ -93,14 +93,21 @@ function createList() {
 /**
  * Mount the plugin against a fake client context.
  * @param options - the session list to observe.
- * @returns the mounted context and captured slot registrations.
+ * @returns the mounted context, captured registrations, and its event handlers.
  */
 function mount({ list = createList() } = {}) {
 	const plugin = materialize();
 	const disposers = [];
 	const registrations = [];
+	const handlers = new Map();
 	const ctx = {
 		sessions: { list },
+		remote: {
+			$on(event, handler) {
+				handlers.set(event, handler);
+				return () => handlers.delete(event);
+			},
+		},
 		locale: {
 			bind: () => (key) => key,
 			register: () => {},
@@ -121,96 +128,149 @@ function mount({ list = createList() } = {}) {
 	return {
 		list,
 		registrations,
+		handlers,
 		dispose() {
 			for (const dispose of disposers.splice(0)) dispose();
 		},
 	};
 }
 
+/** Read the three selects out of the rendered settings page. */
+function selectsOf(mounted) {
+	const entry = mounted.registrations.find((item) => item.options.name === "plugins.row.config");
+	const view = entry.component({ t: (key) => key, view: "page" });
+	const rows = view.props.children.filter((child) => child.type === "div");
+	return rows.map((row) => row.props.children.find((child) => child.type === "select"));
+}
+
 test("registers one module and asks for the services it uses", () => {
 	assert.equal(registration.id, "dsh-occlick");
 	const plugin = materialize();
 	assert.equal(typeof plugin.apply, "function");
-	assert.deepEqual(plugin.inject, ["sessions", "slots", "locale"]);
+	assert.deepEqual(plugin.inject, ["sessions", "remote", "slots", "locale"]);
 });
 
-test("plays the default sound when a running turn ends", () => {
+test("plays the turn channel when a running turn ends", () => {
 	played.length = 0;
 	const mounted = mount();
 	mounted.list.publish({ a: { running: true } });
 	assert.equal(played.length, 0, "starting a turn is silent");
 	mounted.list.publish({ a: { running: false } });
 	assert.equal(played.length, 1, "the turn end plays once");
-	mounted.dispose();
-});
-
-test("stays silent for repeated idle snapshots and subagent turns", () => {
-	played.length = 0;
-	const mounted = mount();
-	mounted.list.publish({ a: { running: true } });
-	mounted.list.publish({ a: { running: false } });
 	mounted.list.publish({ a: { running: false } });
 	assert.equal(played.length, 1, "only the falling edge plays");
-
-	mounted.list.publish({ child: { running: true, origin: "subagent" } });
-	mounted.list.publish({ child: { running: false, origin: "subagent" } });
-	assert.equal(played.length, 1, "subagent turns stay quiet");
 	mounted.dispose();
 });
 
-test("uses the sound saved in this browser", () => {
+test("stays quiet for subagent turns", () => {
 	played.length = 0;
-	storage.set("dsh-occlick.sound", "yup-02");
 	const mounted = mount();
+	mounted.list.publish({ child: { running: true, origin: "subagent" } });
+	mounted.list.publish({ child: { running: false, origin: "subagent" } });
+	assert.equal(played.length, 0);
+	mounted.dispose();
+});
+
+test("plays the permission channel on an approval request and delegates", () => {
+	played.length = 0;
+	const mounted = mount();
+	const handler = mounted.handlers.get("approval/request");
+	assert.ok(handler, "the approval waterfall is observed");
+
+	let delegated = false;
+	handler.call({}, { toolName: "bash" }, () => {
+		delegated = true;
+	});
+	assert.equal(played.length, 1, "the approval sound plays immediately");
+	assert.equal(delegated, true, "the request is passed on to the approval UI");
+	mounted.dispose();
+});
+
+test("coalesces a burst of approval requests", () => {
+	played.length = 0;
+	const mounted = mount();
+	const handler = mounted.handlers.get("approval/request");
+	handler.call({}, { toolName: "bash" }, () => {});
+	handler.call({}, { toolName: "bash" }, () => {});
+	assert.equal(played.length, 1, "one sound per burst");
+	mounted.dispose();
+});
+
+test("plays the error channel and suppresses the turn-end sound", () => {
+	played.length = 0;
+	storage.clear();
+	const mounted = mount();
+	const onError = mounted.handlers.get("api-session/error");
+	assert.ok(onError, "session errors are observed");
+
+	mounted.list.publish({ a: { running: true } });
+	onError("a", "boom");
+	assert.equal(played.length, 1, "the error sound plays when the error arrives");
+
+	mounted.list.publish({ a: { running: false } });
+	assert.equal(played.length, 1, "the failed turn does not also play the turn-end sound");
+	mounted.dispose();
+});
+
+test("a later clean turn plays the turn-end sound again", () => {
+	played.length = 0;
+	storage.clear();
+	const mounted = mount();
+	const onError = mounted.handlers.get("api-session/error");
+
+	mounted.list.publish({ a: { running: true } });
+	onError("a", "boom");
+	mounted.list.publish({ a: { running: false } });
+
 	mounted.list.publish({ a: { running: true } });
 	mounted.list.publish({ a: { running: false } });
-	assert.equal(played.length, 1);
-	assert.match(played[0].src, /^data:audio\/mpeg;base64,/);
-	storage.clear();
+	assert.equal(played.length, 2, "the error marker is consumed once");
 	mounted.dispose();
 });
 
 test("registers the configuration page for its own row", () => {
 	const mounted = mount();
 	const entry = mounted.registrations.find((item) => item.options.name === "plugins.row.config");
-	assert.ok(entry, "the row configuration slot is registered");
+	assert.ok(entry);
 	assert.equal(entry.options.key, "dsh-occlick#occlick");
 	assert.equal(entry.options.locale, "plugin.occlick");
-	mounted.dispose();
-});
-
-test("the page renders every sound and persists a new choice", () => {
-	played.length = 0;
-	storage.clear();
-	const mounted = mount();
-	const entry = mounted.registrations.find((item) => item.options.name === "plugins.row.config");
 
 	const summary = entry.component({ t: (key) => key, view: "summary" });
-	assert.equal(summary, "summary", "the one-line view returns copy, not a form");
-
-	const view = entry.component({ t: (key) => key, view: "page" });
-	const select = view.props.children.find((child) => child.type === "select");
-	assert.equal(select.props.children.length, 45, "all 45 OpenCode sounds are offered");
-	assert.equal(select.props.value, "staplebops-01", "the default matches OpenCode's own turn-end sound");
-
-	const before = played.length;
-	select.props.onChange({ target: { value: "nope-03" } });
-	assert.equal(storage.get("dsh-occlick.sound"), "nope-03");
-	assert.equal(played.length, before + 1, "choosing previews the sound");
-	assert.match(played.at(-1).src, /^data:audio\/mpeg;base64,/);
+	assert.equal(summary, "summary");
 	mounted.dispose();
 });
 
-test("labels match the OpenCode picker", () => {
+test("renders one selector per channel with OpenCode's defaults", () => {
+	storage.clear();
 	const mounted = mount();
-	const entry = mounted.registrations.find((item) => item.options.name === "plugins.row.config");
-	const view = entry.component({ t: (key) => key, view: "page" });
-	const select = view.props.children.find((child) => child.type === "select");
-	const labels = select.props.children.map((option) => option.props.children[0]);
-	assert.ok(labels.includes("Staplebops 01"), "Staplebops 01 is present");
-	assert.ok(labels.includes("Bip-bop 06"), "Bip-bop 06 is present");
-	assert.ok(labels.includes("Nope 12"), "Nope 12 is present");
-	assert.ok(labels.includes("Yup 06"), "Yup 06 is present");
-	assert.equal(labels.length, 45);
+	const selects = selectsOf(mounted);
+	assert.equal(selects.length, 3, "turn, permission, and error");
+	assert.deepEqual(
+		selects.map((select) => select.props.value),
+		["staplebops-01", "staplebops-02", "nope-03"],
+	);
+	for (const select of selects) assert.equal(select.props.children.length, 45);
+	mounted.dispose();
+});
+
+test("saving one channel previews it and leaves the others alone", () => {
+	storage.clear();
+	played.length = 0;
+	const mounted = mount();
+	const [, permission] = selectsOf(mounted);
+	const before = played.length;
+	permission.props.onChange({ target: { value: "yup-02" } });
+	assert.equal(storage.get("dsh-occlick.permission"), "yup-02");
+	assert.equal(played.length, before + 1, "the new choice previews");
+	assert.equal(storage.has("dsh-occlick.turn"), false, "other channels are untouched");
+	mounted.dispose();
+});
+
+test("inherits a choice saved by the previous single-channel version", () => {
+	storage.clear();
+	storage.set("dsh-occlick.sound", "nope-05");
+	const mounted = mount();
+	const [turn] = selectsOf(mounted);
+	assert.equal(turn.props.value, "nope-05");
 	mounted.dispose();
 });

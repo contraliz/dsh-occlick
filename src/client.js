@@ -15,69 +15,93 @@ window.__ModuleLoader__.load({
 		const react = require("react");
 
 		/** Browser services this plugin needs. */
-		const inject = ["sessions", "slots", "locale"];
+		const inject = ["sessions", "remote", "slots", "locale"];
 
 		/** Dictionary namespace owned by this plugin. */
 		const NS = "plugin.occlick";
 
-		/** Where the browser remembers the chosen sound. */
-		const STORAGE_KEY = "dsh-occlick.sound";
+		/** Where the browser remembers each choice. */
+		const STORAGE_PREFIX = "dsh-occlick.";
 
-		/** The OpenCode clip OpenCode itself uses for a finished turn. */
-		const DEFAULT_SOUND = "staplebops-01";
+		/** Pre-existing key, kept so an upgrade inherits the chosen turn sound. */
+		const LEGACY_KEY = "dsh-occlick.sound";
+
+		/** One entry per event the plugin can sound, with OpenCode's own default. */
+		const CHANNELS = [
+			{ id: "turn", fallback: "staplebops-01" },
+			{ id: "permission", fallback: "staplebops-02" },
+			{ id: "error", fallback: "nope-03" },
+		];
 
 		/** `[{ id, label, data }]`, filled in by the build. */
 		const SOUNDS = __SOUND_LIBRARY__;
 
 		/** Page copy. */
 		const en = {
-			title: "Turn sound",
-			sound: "End-of-turn sound",
-			hint: "Plays once when an agent turn finishes. Choose any sound from the OpenCode library; it is saved in this browser.",
-			summary: "Plays a chime when an agent turn finishes.",
-			preview: "Preview",
-			missing: "This browser cannot play audio.",
+			title: "Sound effects",
+			turn: "Turn finished",
+			turnHint: "Plays once when an agent turn completes.",
+			permission: "Permission requested",
+			permissionHint: "Plays when the agent asks you to approve an action.",
+			error: "Turn ended on an error",
+			errorHint: "Plays instead of the turn-finished sound when a turn fails.",
+			hint: "Choices are saved in this browser. Each dropdown previews as you pick.",
+			summary: "Plays a sound when a turn finishes, asks for permission, or fails.",
 		};
 
 		const zh = {
-			title: "回合提示音",
-			sound: "回合结束提示音",
-			hint: "智能体回合结束时播放一次。可选任意 OpenCode 音效，保存在当前浏览器中。",
-			summary: "智能体回合结束时播放提示音。",
-			preview: "试听",
-			missing: "当前浏览器无法播放音频。",
+			title: "提示音",
+			turn: "回合完成",
+			turnHint: "智能体回合完成时播放一次。",
+			permission: "请求权限",
+			permissionHint: "智能体请求你批准某个操作时播放。",
+			error: "回合出错结束",
+			errorHint: "回合失败时播放，替换「回合完成」提示音。",
+			hint: "选择保存在当前浏览器中；切换选项时会立即试听。",
+			summary: "回合完成、请求权限或失败时播放提示音。",
 		};
 
 		/**
 		 * Resolve one sound by id.
 		 * @param id - sound id such as `staplebops-01`.
-		 * @returns the sound, or the default when the id is unknown.
+		 * @param fallback - id used when the requested one is missing.
+		 * @returns the sound, always defined for a non-empty library.
 		 */
-		function findSound(id) {
-			return SOUNDS.find((sound) => sound.id === id) ?? SOUNDS.find((sound) => sound.id === DEFAULT_SOUND) ?? SOUNDS[0];
+		function findSound(id, fallback) {
+			return (
+				SOUNDS.find((sound) => sound.id === id) ??
+				SOUNDS.find((sound) => sound.id === fallback) ??
+				SOUNDS[0]
+			);
 		}
 
 		/**
-		 * Read the saved choice, falling back to the default.
+		 * Read the saved choice for one channel.
+		 * @param channel - one entry of {@link CHANNELS}.
 		 * @returns a sound id this build ships.
 		 */
-		function readSelection() {
+		function readChoice(channel) {
 			try {
-				const saved = window.localStorage.getItem(STORAGE_KEY);
+				const saved = window.localStorage.getItem(STORAGE_PREFIX + channel.id);
 				if (saved !== null && SOUNDS.some((sound) => sound.id === saved)) return saved;
+				if (channel.id === "turn") {
+					const legacy = window.localStorage.getItem(LEGACY_KEY);
+					if (legacy !== null && SOUNDS.some((sound) => sound.id === legacy)) return legacy;
+				}
 			} catch {
 				// Private modes and storage policies can refuse reads.
 			}
-			return DEFAULT_SOUND;
+			return channel.fallback;
 		}
 
 		/**
-		 * Persist the choice; a refused write only costs the preference.
-		 * @param id - the selected sound id.
+		 * Persist one choice; a refused write only costs the preference.
+		 * @param channelId - channel such as `turn`.
+		 * @param soundId - the selected sound id.
 		 */
-		function writeSelection(id) {
+		function writeChoice(channelId, soundId) {
 			try {
-				window.localStorage.setItem(STORAGE_KEY, id);
+				window.localStorage.setItem(STORAGE_PREFIX + channelId, soundId);
 			} catch {
 				// Keep playing the current choice even when it cannot be saved.
 			}
@@ -105,10 +129,11 @@ window.__ModuleLoader__.load({
 			/**
 			 * Play one sound from the start.
 			 * @param id - the sound to play.
+			 * @param fallback - id used when `id` is unknown.
 			 * @returns whether playback was attempted.
 			 */
-			function play(id) {
-				const sound = findSound(id);
+			function play(id, fallback) {
+				const sound = findSound(id, fallback);
 				const audio = ensure();
 				if (sound === undefined || audio === undefined) return false;
 				audio.muted = false;
@@ -126,14 +151,14 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
-			 * Grant media activation once, so a later turn-end click is not blocked
-			 * by the autoplay policy.
+			 * Grant media activation once, so a later event is not blocked by the
+			 * autoplay policy.
 			 */
 			function unlock() {
 				const audio = ensure();
 				if (audio === undefined) return;
 				audio.muted = true;
-				play(readSelection());
+				play(readChoice(CHANNELS[0]), CHANNELS[0].fallback);
 				audio.muted = false;
 			}
 
@@ -151,7 +176,8 @@ window.__ModuleLoader__.load({
 			tag.dataset.plugin = "dsh-occlick";
 			tag.dataset.pluginCss = tagId;
 			tag.textContent = `
-.dsh-occlick { display: grid; gap: 8px; padding: 4px 0; }
+.dsh-occlick { display: grid; gap: 14px; padding: 4px 0; }
+.dsh-occlick__row { display: grid; gap: 6px; }
 .dsh-occlick__label { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 1.5; }
 .dsh-occlick__select { appearance: auto; background: var(--dsw-alias-bg-layer-2, transparent); color: var(--dsw-alias-label-primary, inherit); border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35)); border-radius: 6px; font: inherit; font-size: 13px; max-width: 320px; padding: 6px 8px; }
 .dsh-occlick__hint { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.5; margin: 0; }
@@ -160,40 +186,54 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * The Plugins page configuration for this bundle's row.
+		 * The Plugins page configuration for this bundle's row: one selector per
+		 * event channel.
 		 * @param props - locale copy, the requested view, and the shared player.
-		 * @returns the selector, or a one-line summary.
+		 * @returns the selectors, or a one-line summary.
 		 */
-		function TurnSoundSettings(props) {
+		function SoundSettings(props) {
 			const t = props.t;
 			const player = props.player;
-			const [selected, setSelected] = react.useState(readSelection);
+			const [choices, setChoices] = react.useState(() => {
+				const initial = {};
+				for (const entry of CHANNELS) initial[entry.id] = readChoice(entry);
+				return initial;
+			});
 
 			if (props.view === "summary") return t("summary");
 
-			const change = (event) => {
-				const id = event.target.value;
-				setSelected(id);
-				writeSelection(id);
-				player.play(id);
-			};
+			const rows = CHANNELS.map((entry) => {
+				const selectId = `dsh-occlick-${entry.id}`;
+				const change = (event) => {
+					const soundId = event.target.value;
+					setChoices((previous) => ({ ...previous, [entry.id]: soundId }));
+					writeChoice(entry.id, soundId);
+					player.play(soundId, entry.fallback);
+				};
+				return react.createElement(
+					"div",
+					{ className: "dsh-occlick__row", key: entry.id },
+					react.createElement("label", { className: "dsh-occlick__label", htmlFor: selectId }, t(entry.id)),
+					react.createElement(
+						"select",
+						{ className: "dsh-occlick__select", id: selectId, value: choices[entry.id], onChange: change },
+						SOUNDS.map((sound) => react.createElement("option", { key: sound.id, value: sound.id }, sound.label)),
+					),
+					react.createElement("p", { className: "dsh-occlick__hint" }, t(`${entry.id}Hint`)),
+				);
+			});
 
 			return react.createElement(
 				"div",
 				{ className: "dsh-occlick" },
-				react.createElement("label", { className: "dsh-occlick__label", htmlFor: "dsh-occlick-sound" }, t("sound")),
-				react.createElement(
-					"select",
-					{ className: "dsh-occlick__select", id: "dsh-occlick-sound", value: selected, onChange: change },
-					SOUNDS.map((sound) => react.createElement("option", { key: sound.id, value: sound.id }, sound.label)),
-				),
+				rows,
 				react.createElement("p", { className: "dsh-occlick__hint" }, t("hint")),
 			);
 		}
 
 		/**
-		 * Client plugin body: play the chosen sound at each turn end and expose the
-		 * selector on the Plugins page.
+		 * Client plugin body: one sound per event channel, plus the selectors on the
+		 * Plugins page.
 		 * @param ctx - client root context.
 		 */
 		function apply(ctx) {
@@ -202,6 +242,11 @@ window.__ModuleLoader__.load({
 			installStyles();
 
 			const player = createPlayer();
+			const channelOf = (id) => CHANNELS.find((entry) => entry.id === id) ?? CHANNELS[0];
+			const playChannel = (id) => {
+				const entry = channelOf(id);
+				return player.play(readChoice(entry), entry.fallback);
+			};
 
 			/** Unlock media playback on the first interaction the page receives. */
 			ctx.effect(() => {
@@ -213,6 +258,40 @@ window.__ModuleLoader__.load({
 					window.removeEventListener("keydown", unlock, { capture: true });
 				};
 			}, "occlick: media activation");
+
+			/** Sessions that reported an error recently, so a failed turn sounds once. */
+			const errored = new Map();
+			const ERROR_WINDOW_MS = 15000;
+
+			/** Approval requests can arrive in bursts; one sound per burst is enough. */
+			let lastApprovalAt = 0;
+			const APPROVAL_GAP_MS = 1500;
+
+			if (ctx.remote !== undefined && ctx.remote !== null && typeof ctx.remote.$on === "function") {
+				ctx.effect(
+					() =>
+						ctx.remote.$on("approval/request", function (request, next) {
+							const now = Date.now();
+							if (now - lastApprovalAt > APPROVAL_GAP_MS) {
+								lastApprovalAt = now;
+								playChannel("permission");
+							}
+							return next();
+						}),
+					"occlick: permission requests",
+				);
+
+				ctx.effect(
+					() =>
+						ctx.remote.$on("api-session/error", (sessionId) => {
+							errored.set(sessionId, Date.now());
+							playChannel("error");
+						}),
+					"occlick: session errors",
+				);
+			} else {
+				console.warn("[dsh-occlick] the remote event service is unavailable; approval and error sounds are off");
+			}
 
 			const sessions = ctx.sessions;
 			const list = sessions === null || sessions === undefined ? undefined : sessions.list;
@@ -234,7 +313,13 @@ window.__ModuleLoader__.load({
 						previous.set(id, running);
 						if (wasRunning !== true || running) continue;
 						if (row.origin === "subagent") continue;
-						player.play(readSelection());
+						const failedAt = errored.get(id);
+						if (failedAt !== undefined && Date.now() - failedAt < ERROR_WINDOW_MS) {
+							// The error channel already sounded; do not double up.
+							errored.delete(id);
+							continue;
+						}
+						playChannel("turn");
 					}
 					for (const id of previous.keys()) if (!live.has(id)) previous.delete(id);
 				};
@@ -253,7 +338,7 @@ window.__ModuleLoader__.load({
 								key: "dsh-occlick#occlick",
 								locale: NS,
 							},
-							(props) => TurnSoundSettings({ ...props, player }),
+							(props) => SoundSettings({ ...props, player }),
 						),
 					),
 				"occlick: settings page",

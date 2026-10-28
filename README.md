@@ -1,26 +1,27 @@
 # dsh-occlick
 
-**Plays an OpenCode turn-end sound in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)**, with a picker for the whole OpenCode sound library.
+**Plays OpenCode notification sounds in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)** — one per event, each with its own picker from the whole OpenCode sound library.
 
-OpenCode ships a small library of notification clips for its desktop app. This plugin brings that library to DSH and plays one when an agent turn finishes, so you can look away while a long task runs.
+OpenCode ships a small library of notification clips for its desktop app. This plugin brings that library to DSH and plays one when a turn finishes, when the agent asks for permission, and when a turn fails, so you can look away while a long task runs.
 
-- **One click per turn**: the sound plays when a Session's turn ends, not for every step, tool call, or streamed token.
-- **45 sounds, one picker**: everything OpenCode ships — Alert, Bip-bop, Nope, Staplebops, and Yup — with an instant preview as you choose.
-- **Configured in DSH**: the picker lives on the **Plugins** page, on the plugin's own row, so it follows the same enable/disable and uninstall flow as any other bundle.
-- **Quiet where it should be**: subagent turns stay silent, and a burst of simultaneous endings plays once.
+- **Three channels, three pickers**: turn finished, permission requested, and turn ended on an error each choose their own clip.
+- **One click per event**: sounds follow the event, not every step, tool call, or streamed token. A failed turn plays the error clip instead of the turn-finished clip, never both.
+- **45 sounds each**: everything OpenCode ships — Alert, Bip-bop, Nope, Staplebops, and Yup — with an instant preview as you choose.
+- **Configured in DSH**: the pickers live on the **Plugins** page, on the plugin's own row, so they follow the same enable/disable and uninstall flow as any other bundle.
+- **Quiet where it should be**: subagent turns stay silent, and a burst of simultaneous endings or approval requests plays once.
 
 ## What it does
 
-The browser half watches the client Session list. When a Session's `running` bit falls from `true` to `false`, it plays the chosen clip:
+| Event | Source | Behaviour |
+| --- | --- | --- |
+| Turn finished | Session `running: true → false` | Plays the turn clip once |
+| Permission requested | `approval/request` | Plays the permission clip, then passes the request to the approval UI |
+| Turn ended on an error | `api-session/error` | Plays the error clip; the following turn end stays silent |
+| Repeated idle refresh | `false → false` | Silent |
+| Subagent Session | `origin: subagent` | Silent |
+| Mounted over an idle list | — | Silent (no history replay) |
 
-| Transition | Sound |
-| --- | --- |
-| `true → false` | Plays once |
-| `false → false` | Silent (list refreshes are frequent) |
-| Subagent Session | Silent |
-| Mounted over an idle list | Silent (no history replay) |
-
-Because DSH publishes running state per Session, a turn that ends in the background still makes the sound. A turn that is interrupted or fails also counts as an ending.
+Because DSH publishes running state per Session, a turn that ends in the background still makes the sound. An error is remembered per Session for 15 seconds, so the failed turn does not also play the turn-finished clip. Approval requests are coalesced within 1.5 seconds, so a burst sounds once.
 
 ## Install
 
@@ -54,13 +55,19 @@ cd dsh-occlick
 dsh plugin --profile web add .
 ```
 
-## Choose the sound
+## Choose the sounds
 
-Open **Plugins → dsh-occlick → Configure**. The row's page shows one selector listing every clip, labelled the way OpenCode labels them.
+Open **Plugins → dsh-occlick → Configure**. The row's page shows one selector per channel, each listing every clip and labelled the way OpenCode labels them.
 
-The default is **Staplebops 01**, the same clip OpenCode's desktop app uses for a finished turn.
+The defaults are the clips OpenCode's own desktop app uses for the same events:
 
-Choosing a sound saves it and plays it immediately, so you can audition without waiting for a turn.
+| Channel | Default | OpenCode equivalent |
+| --- | --- | --- |
+| Turn finished | `staplebops-01` | Agent complete |
+| Permission requested | `staplebops-02` | Permission required |
+| Turn ended on an error | `nope-03` | Error |
+
+Choosing a sound saves it and plays it immediately, so you can audition without waiting for an event.
 
 | Family | Count | Library names |
 | --- | --- | --- |
@@ -70,7 +77,7 @@ Choosing a sound saves it and plays it immediately, so you can audition without 
 | Staplebops | 7 | `staplebops-01` … `staplebops-07` |
 | Yup | 6 | `yup-01` … `yup-06` |
 
-The choice is stored in the browser (`localStorage`), so it is per browser rather than per profile. Clearing site data restores the default.
+The choices are stored in the browser under `dsh-occlick.turn`, `dsh-occlick.permission`, and `dsh-occlick.error`, so they are per browser rather than per profile. A turn sound saved by version `0.2.x` (`dsh-occlick.sound`) is carried over. Clearing site data restores the defaults.
 
 ## Details
 
@@ -93,7 +100,7 @@ The source layout:
 
 | Path | Role |
 | --- | --- |
-| `src/client.js` | Browser half: turn-end detection, playback, and the Plugins page selector |
+| `src/client.js` | Browser half: event detection, playback, and the Plugins page pickers |
 | `lib/client.js` | Generated browser bundle (committed so the package loads as installed) |
 | `lib/index.js` | Host half: an empty `apply` that gives the Loader a row |
 | `assets/audio` | The OpenCode clips, as downloaded |
